@@ -9,7 +9,9 @@ TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
 
 # ===== CONFIGURAÇÕES DO FILTRO =====
-DESCONTO_MINIMO = 95  # % de desconto mínimo para considerar "joia rara"
+# Pode ser alterado sem mexer no código: GitHub → Settings → Secrets and variables
+# → Actions → aba "Variables" → crie/edite DESCONTO_MINIMO (ex: 90, 95, 99)
+DESCONTO_MINIMO = int(os.getenv("DESCONTO_MINIMO", "95"))
 
 # ===== ARQUIVO DE HISTÓRICO (para não repetir promoção) =====
 HISTORICO_FILE = "historico.json"
@@ -92,7 +94,15 @@ def buscar_gratis_gamerpower():
             params = {"platform": plataforma, "type": "game"}
             resp = requests.get(url, params=params, timeout=15)
             resp.raise_for_status()
-            for item in resp.json():
+            dados = resp.json()
+
+            if not isinstance(dados, list):
+                # A API retorna um objeto (não uma lista) quando não há
+                # giveaways ativos para essa plataforma no momento.
+                print(f"⚪ Nenhum jogo grátis no momento para {plataforma}.")
+                continue
+
+            for item in dados:
                 resultados[item['id']] = item  # dedup por id
         except Exception as e:
             print(f"⚠️ Erro ao buscar GamerPower ({plataforma}): {e}")
