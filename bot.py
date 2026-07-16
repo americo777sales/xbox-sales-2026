@@ -1,10 +1,8 @@
 import requests
 import json
 import os
-import re
 import time
 from datetime import datetime
-from bs4 import BeautifulSoup
 
 # ===== CONFIGURAÇÕES (vem do GitHub Secrets) =====
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
@@ -179,89 +177,6 @@ def filtrar_gratis_gamerpower(giveaways):
     return gratis
 
 
-# ===================== FONTE 3: XB Deals (preços da Microsoft Store, terceiro) =====================
-
-def buscar_promocoes_xbdeals():
-    """Scraping do XB Deals (xbdeals.net), que rastreia preços oficiais da Microsoft Store.
-    Fonte experimental: se a estrutura do site mudar, isso pode parar de funcionar."""
-    try:
-        url = "https://xbdeals.net/us-store/discounts"
-        params = {"sort": "discount"}
-        headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-                          "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
-            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-            "Accept-Language": "en-US,en;q=0.9,pt-BR;q=0.8,pt;q=0.7",
-            "Referer": "https://xbdeals.net/us-store/",
-        }
-        resp = requests.get(url, params=params, headers=headers, timeout=20)
-        resp.raise_for_status()
-
-        soup = BeautifulSoup(resp.text, "html.parser")
-        ancoras = soup.select('a[href*="/us-store/game/"]')
-
-        vistos = set()
-        promocoes = []
-        for a in ancoras:
-            href = a.get("href", "")
-            match_path = re.search(r'/us-store/game/(\d+)/([\w-]+)', href)
-            if not match_path:
-                continue
-            game_id, slug = match_path.groups()
-            if game_id in vistos:
-                continue
-            vistos.add(game_id)
-
-            texto = a.get_text(" ", strip=True)
-            match_desconto = re.search(r'-(\d{1,3})%', texto)
-            if not match_desconto:
-                continue
-            desconto = int(match_desconto.group(1))
-            if desconto < DESCONTO_MINIMO:
-                continue
-
-            precos = re.findall(r'\$([\d,]+\.\d{2})', texto)
-            preco_usd = float(precos[0].replace(',', '')) if precos else 0.0
-
-            img_tag = a.find("img")
-            imagem = img_tag.get("src") if img_tag else None
-
-            titulo = slug.replace('-', ' ').title()
-
-            promocoes.append({
-                'titulo': titulo,
-                'desconto': f"{desconto}%",
-                'preco_usd_bruto': preco_usd,  # convertido depois com a cotação
-                'eh_gratis': preco_usd <= 0,
-                'metacritic': 0,
-                'nota_users': 0,
-                'genero': None,
-                'imagem': imagem,
-                'link': f"https://xbdeals.net{href}",
-                'id': f"xbd_{game_id}",
-                'fonte': "XB Deals (Microsoft Store)"
-            })
-
-        if len(promocoes) == 0:
-            alertas_saude.append(
-                "XB Deals: 0 promoções encontradas no scraping — pode ser que o site mudou de layout "
-                "(fonte experimental, mais frágil que as outras)."
-            )
-        print(f"🔎 XB Deals: {len(promocoes)} promoções extraídas do scraping.")
-        return promocoes
-
-    except Exception as e:
-        print(f"⚠️ Erro ao buscar XB Deals: {e}")
-        alertas_saude.append(f"XB Deals: erro ao fazer scraping ({e}) — fonte experimental, pode ter mudado")
-        return []
-
-
-def finalizar_precos_xbdeals(promocoes, cotacao_dolar):
-    for p in promocoes:
-        p['preco_brl'] = p.pop('preco_usd_bruto', 0.0) * cotacao_dolar
-    return promocoes
-
-
 # ===================== TELEGRAM =====================
 
 def montar_legenda(j):
@@ -346,11 +261,7 @@ def main():
     giveaways = buscar_gratis_gamerpower()
     gratis = filtrar_gratis_gamerpower(giveaways)
 
-    # Fonte 3: promoções da Microsoft Store via XB Deals (experimental)
-    promocoes_xbd = buscar_promocoes_xbdeals()
-    promocoes_xbd = finalizar_precos_xbdeals(promocoes_xbd, cotacao_dolar)
-
-    todas = promocoes + gratis + promocoes_xbd
+    todas = promocoes + gratis
 
     novas = [j for j in todas if j['id'] not in historico]
 
