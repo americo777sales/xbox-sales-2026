@@ -1,0 +1,35 @@
+name: Busca Promoções Xbox
+
+on:
+  schedule:
+    - cron: '0 13 * * *'
+  workflow_dispatch:
+
+jobs:
+  buscar:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 📥 Clonar repositório
+        uses: actions/checkout@v4
+
+      - name: 🐍 Instalar Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: 📦 Instalar dependências
+        run: pip install -r requirements.txt
+
+      - name: 🤖 Rodar o bot
+        env:
+          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+          CHAT_ID: ${{ secrets.CHAT_ID }}
+        run: python bot.py
+
+      - name: 💾 Salvar histórico atualizado
+        run: |
+          git config user.name "GitHub Actions"
+          git config user.email "actions@github.com"
+          git add historico.json || echo "Sem mudanças"
+          git commit -m "Atualiza histórico de promoções" || echo "Nada para commitar"
+          git push
