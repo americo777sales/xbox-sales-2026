@@ -4,10 +4,17 @@ on:
   schedule:
     - cron: '0 13 * * *'   # Roda todo dia às 13h UTC (10h Brasil)
   workflow_dispatch:        # Permite rodar manualmente
+    inputs:
+      desconto_minimo:
+        description: 'Desconto mínimo (%) só para esta execução manual (deixe em branco para usar o padrão)'
+        required: false
+        default: ''
 
 jobs:
   buscar:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
       - name: 📥 Clonar repositório
         uses: actions/checkout@v4
@@ -24,6 +31,7 @@ jobs:
         env:
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           CHAT_ID: ${{ secrets.CHAT_ID }}
+          DESCONTO_MINIMO: ${{ github.event.inputs.desconto_minimo || vars.DESCONTO_MINIMO || '95' }}
         run: python bot.py
 
       - name: 💾 Salvar histórico atualizado
