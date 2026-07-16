@@ -1,8 +1,10 @@
 import requests
 import json
 import os
+import re
 import time
 from datetime import datetime
+from bs4 import BeautifulSoup
 
 # ===== CONFIGURAÇÕES (vem do GitHub Secrets) =====
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
@@ -10,11 +12,18 @@ CHAT_ID = os.getenv("CHAT_ID")
 
 # ===== CONFIGURAÇÕES DO FILTRO =====
 # Pode ser alterado sem mexer no código: GitHub → Settings → Secrets and variables
-# → Actions → aba "Variables" → crie/edite DESCONTO_MINIMO (ex: 90, 95, 99)
-DESCONTO_MINIMO = int(os.getenv("DESCONTO_MINIMO", "95"))
+# → Actions → aba "Variables" → crie/edite DESCONTO_MINIMO (ex: 80, 85, 95)
+DESCONTO_MINIMO = int(os.getenv("DESCONTO_MINIMO", "85"))
 
 # ===== ARQUIVO DE HISTÓRICO (para não repetir promoção) =====
 HISTORICO_FILE = "historico.json"
+
+# Link para a página de Actions do repositório (usado nos alertas de "quebrou")
+REPO = os.getenv("GITHUB_REPOSITORY", "")
+LINK_ACTIONS = f"https://github.com/{REPO}/actions" if REPO else ""
+
+# Lista de problemas detectados durante a execução (para o alerta de saúde)
+alertas_saude = []
 
 
 def carregar_historico():
@@ -38,7 +47,8 @@ def buscar_cotacao_dolar():
         return float(dados["rates"]["BRL"])
     except Exception as e:
         print(f"⚠️ Não foi possível buscar cotação do dólar ({e}). Usando valor de reserva.")
-        return 5.50  # valor de reserva caso a API de cotação falhe
+        alertas_saude.append("Cotação do dólar: falhou, usando valor de reserva (R$ 5,50)")
+        return 5.50
 
 
 # ===================== FONTE 1: CheapShark (promoções pagas) =====================
@@ -46,22 +56,55 @@ def buscar_cotacao_dolar():
 def buscar_promocoes_cheapshark():
     url = "https://www.cheapshark.com/api/1.0/deals"
     params = {
-        'storeID': 11,        # Xbox/Microsoft Store
+        'storeID': 11,
         'sortBy': 'Savings',
         'pageSize': 60,
-        'upperPrice': 15      # só jogos baratos (joias escondidas!)
+        'upperPrice': 15
     }
-    response = requests.get(url, params=params, timeout=15)
-    response.raise_for_status()
-    return response.json()
+    try:
+        response = requests.get(url, params=params, timeout=15)
+        response.raise_for_status()
+        dados = response.json()
+        if not isinstance(dados, list) or len(dados) == 0:
+            alertas_saude.append("CheapShark: retornou 0 itens (pode estar fora do ar ou mudou de formato)")
+        return dados
+    except Exception as e:
+        print(f"⚠️ Erro ao buscar CheapShark: {e}")
+        alertas_saude.append(f"CheapShark: erro ao buscar dados ({e})")
+        return []
+
+
+_cache_genero_steam = {}
+
+
+def buscar_genero_steam(steam_app_id):
+    """Busca o(s) gênero(s) de um jogo na API pública da Steam, usando o steamAppID."""
+    if not steam_app_id:
+        return None
+    if steam_app_id in _cache_genero_steam:
+        return _cache_genero_steam[steam_app_id]
+    try:
+        url = "https://store.steampowered.com/api/appdetails"
+        params = {"appids": steam_app_id, "l": "portuguese"}
+        resp = requests.get(url, params=params, timeout=10)
+        resp.raise_for_status()
+        dados = resp.json()
+        info = dados.get(str(steam_app_id), {})
+        if not info.get("success"):
+            _cache_genero_steam[steam_app_id] = None
+            return None
+        generos = info.get("data", {}).get("genres", [])
+        nomes = ", ".join(g["description"] for g in generos[:3])
+        _cache_genero_steam[steam_app_id] = nomes or None
+        return nomes or None
+    except Exception:
+        _cache_genero_steam[steam_app_id] = None
+        return None
 
 
 def filtrar_promocoes_cheapshark(jogos, cotacao_dolar):
     print(f"🔎 CheapShark retornou {len(jogos)} itens brutos para a loja Xbox.")
     promocoes = []
-    descartados_preco_zero = 0
-    descartados_desconto = 0
-    descartados_nota = 0
     for jogo in jogos:
         desconto = float(jogo.get('savings', 0))
         metacritic = int(jogo.get('metacriticScore') or 0)
@@ -69,16 +112,13 @@ def filtrar_promocoes_cheapshark(jogos, cotacao_dolar):
         preco_usd = float(jogo.get('salePrice', 0))
 
         if preco_usd <= 0:
-            descartados_preco_zero += 1
-            continue  # jogos grátis são tratados pela fonte GamerPower
-
+            continue
         if desconto < DESCONTO_MINIMO:
-            descartados_desconto += 1
+            continue
+        if not (metacritic >= 70 or nota_usuarios >= 80):
             continue
 
-        if not (metacritic >= 70 or nota_usuarios >= 80):
-            descartados_nota += 1
-            continue
+        genero = buscar_genero_steam(jogo.get('steamAppID'))
 
         promocoes.append({
             'titulo': jogo['title'],
@@ -87,14 +127,12 @@ def filtrar_promocoes_cheapshark(jogos, cotacao_dolar):
             'eh_gratis': False,
             'metacritic': metacritic,
             'nota_users': nota_usuarios,
+            'genero': genero,
             'imagem': jogo.get('thumb'),
             'link': f"https://www.cheapshark.com/redirect?dealID={jogo['dealID']}",
-            'id': f"cs_{jogo['dealID']}"
+            'id': f"cs_{jogo['dealID']}",
+            'fonte': "CheapShark"
         })
-
-    print(f"   ↳ Descartados por preço zero (não é o alvo aqui): {descartados_preco_zero}")
-    print(f"   ↳ Descartados por desconto abaixo de {DESCONTO_MINIMO}%: {descartados_desconto}")
-    print(f"   ↳ Descartados por nota (Metacritic/Steam) insuficiente: {descartados_nota}")
     print(f"   ↳ Passaram no filtro: {len(promocoes)}")
     return promocoes
 
@@ -102,7 +140,6 @@ def filtrar_promocoes_cheapshark(jogos, cotacao_dolar):
 # ===================== FONTE 2: GamerPower (jogos grátis / giveaways) =====================
 
 def buscar_gratis_gamerpower():
-    """Busca giveaways de jogos grátis para Xbox (Series X/S e One)."""
     plataformas = ["xbox-series-xs", "xbox-one"]
     resultados = {}
     for plataforma in plataformas:
@@ -112,17 +149,14 @@ def buscar_gratis_gamerpower():
             resp = requests.get(url, params=params, timeout=15)
             resp.raise_for_status()
             dados = resp.json()
-
             if not isinstance(dados, list):
-                # A API retorna um objeto (não uma lista) quando não há
-                # giveaways ativos para essa plataforma no momento.
                 print(f"⚪ Nenhum jogo grátis no momento para {plataforma}.")
                 continue
-
             for item in dados:
-                resultados[item['id']] = item  # dedup por id
+                resultados[item['id']] = item
         except Exception as e:
             print(f"⚠️ Erro ao buscar GamerPower ({plataforma}): {e}")
+            alertas_saude.append(f"GamerPower ({plataforma}): erro ao buscar dados ({e})")
     return list(resultados.values())
 
 
@@ -136,11 +170,90 @@ def filtrar_gratis_gamerpower(giveaways):
             'eh_gratis': True,
             'metacritic': 0,
             'nota_users': 0,
+            'genero': None,
             'imagem': item.get('image'),
             'link': item.get('open_giveaway_url') or item.get('gamerpower_url'),
-            'id': f"gp_{item['id']}"
+            'id': f"gp_{item['id']}",
+            'fonte': "GamerPower"
         })
     return gratis
+
+
+# ===================== FONTE 3: XB Deals (preços da Microsoft Store, terceiro) =====================
+
+def buscar_promocoes_xbdeals():
+    """Scraping do XB Deals (xbdeals.net), que rastreia preços oficiais da Microsoft Store.
+    Fonte experimental: se a estrutura do site mudar, isso pode parar de funcionar."""
+    try:
+        url = "https://xbdeals.net/us-store/discounts"
+        params = {"sort": "discount"}
+        headers = {"User-Agent": "Mozilla/5.0 (compatible; XboxDealsBot/1.0)"}
+        resp = requests.get(url, params=params, headers=headers, timeout=20)
+        resp.raise_for_status()
+
+        soup = BeautifulSoup(resp.text, "html.parser")
+        ancoras = soup.select('a[href*="/us-store/game/"]')
+
+        vistos = set()
+        promocoes = []
+        for a in ancoras:
+            href = a.get("href", "")
+            match_path = re.search(r'/us-store/game/(\d+)/([\w-]+)', href)
+            if not match_path:
+                continue
+            game_id, slug = match_path.groups()
+            if game_id in vistos:
+                continue
+            vistos.add(game_id)
+
+            texto = a.get_text(" ", strip=True)
+            match_desconto = re.search(r'-(\d{1,3})%', texto)
+            if not match_desconto:
+                continue
+            desconto = int(match_desconto.group(1))
+            if desconto < DESCONTO_MINIMO:
+                continue
+
+            precos = re.findall(r'\$([\d,]+\.\d{2})', texto)
+            preco_usd = float(precos[0].replace(',', '')) if precos else 0.0
+
+            img_tag = a.find("img")
+            imagem = img_tag.get("src") if img_tag else None
+
+            titulo = slug.replace('-', ' ').title()
+
+            promocoes.append({
+                'titulo': titulo,
+                'desconto': f"{desconto}%",
+                'preco_usd_bruto': preco_usd,  # convertido depois com a cotação
+                'eh_gratis': preco_usd <= 0,
+                'metacritic': 0,
+                'nota_users': 0,
+                'genero': None,
+                'imagem': imagem,
+                'link': f"https://xbdeals.net{href}",
+                'id': f"xbd_{game_id}",
+                'fonte': "XB Deals (Microsoft Store)"
+            })
+
+        if len(promocoes) == 0:
+            alertas_saude.append(
+                "XB Deals: 0 promoções encontradas no scraping — pode ser que o site mudou de layout "
+                "(fonte experimental, mais frágil que as outras)."
+            )
+        print(f"🔎 XB Deals: {len(promocoes)} promoções extraídas do scraping.")
+        return promocoes
+
+    except Exception as e:
+        print(f"⚠️ Erro ao buscar XB Deals: {e}")
+        alertas_saude.append(f"XB Deals: erro ao fazer scraping ({e}) — fonte experimental, pode ter mudado")
+        return []
+
+
+def finalizar_precos_xbdeals(promocoes, cotacao_dolar):
+    for p in promocoes:
+        p['preco_brl'] = p.pop('preco_usd_bruto', 0.0) * cotacao_dolar
+    return promocoes
 
 
 # ===================== TELEGRAM =====================
@@ -150,10 +263,13 @@ def montar_legenda(j):
         legenda = f"🎮 <b>{j['titulo']}</b>\n💚 <b>GRÁTIS</b>\n"
     else:
         legenda = f"🎮 <b>{j['titulo']}</b>\n💰 <b>{j['desconto']} OFF</b> — R$ {j['preco_brl']:.2f}\n"
+    if j.get('genero'):
+        legenda += f"🏷️ Gênero: {j['genero']}\n"
     if j['metacritic'] > 0:
         legenda += f"⭐ Metacritic: {j['metacritic']}"
     if j['nota_users'] > 0:
         legenda += f" | Users: {j['nota_users']}%"
+    legenda += f"\n📡 Fonte: {j['fonte']}"
     if j['link']:
         legenda += f"\n🔗 <a href='{j['link']}'>Ver oferta</a>"
     return legenda
@@ -172,7 +288,6 @@ def enviar_texto_telegram(mensagem):
 
 
 def enviar_foto_telegram(imagem_url, legenda):
-    """Envia uma foto com legenda. Se a imagem falhar, envia como texto puro."""
     try:
         if not imagem_url:
             raise ValueError("sem imagem disponível")
@@ -188,6 +303,22 @@ def enviar_foto_telegram(imagem_url, legenda):
     except Exception as e:
         print(f"⚠️ Falha ao enviar imagem ({e}). Enviando como texto.")
         enviar_texto_telegram(legenda)
+
+
+def enviar_alerta_saude():
+    """Se alguma fonte apresentou comportamento estranho, avisa separadamente."""
+    if not alertas_saude:
+        return
+    mensagem = "⚠️ <b>Aviso de manutenção do bot</b>\n\n"
+    mensagem += "Uma ou mais fontes de dados tiveram um comportamento inesperado hoje:\n\n"
+    for item in alertas_saude:
+        mensagem += f"• {item}\n"
+    if LINK_ACTIONS:
+        mensagem += f"\n🔧 <a href='{LINK_ACTIONS}'>Abrir Actions para rodar de novo manualmente</a>"
+    try:
+        enviar_texto_telegram(mensagem)
+    except Exception as e:
+        print(f"⚠️ Não foi possível nem enviar o alerta de saúde: {e}")
 
 
 def main():
@@ -209,26 +340,29 @@ def main():
     giveaways = buscar_gratis_gamerpower()
     gratis = filtrar_gratis_gamerpower(giveaways)
 
-    todas = promocoes + gratis
+    # Fonte 3: promoções da Microsoft Store via XB Deals (experimental)
+    promocoes_xbd = buscar_promocoes_xbdeals()
+    promocoes_xbd = finalizar_precos_xbdeals(promocoes_xbd, cotacao_dolar)
 
-    # Filtra só as NOVAS (que ainda não foram enviadas)
+    todas = promocoes + gratis + promocoes_xbd
+
     novas = [j for j in todas if j['id'] not in historico]
 
     if not novas:
         print("⚪ Nenhuma novidade hoje.")
+        enviar_alerta_saude()
         return
 
     novas_gratis = [j for j in novas if j['eh_gratis']]
     novas_promocoes = [j for j in novas if not j['eh_gratis']]
 
-    # Mensagem de abertura (resumo)
     enviar_texto_telegram(f"🚨 <b>ALERTA: {len(novas)} JOIAS RARAS NO XBOX!</b>")
 
     if novas_gratis:
         enviar_texto_telegram("🆓 <b>JOGOS GRÁTIS</b>")
         for j in novas_gratis[:10]:
             enviar_foto_telegram(j['imagem'], montar_legenda(j))
-            time.sleep(1)  # evita atingir limite de envio do Telegram
+            time.sleep(1)
 
     if novas_promocoes:
         enviar_texto_telegram(f"💥 <b>PROMOÇÕES ({DESCONTO_MINIMO}%+ OFF)</b>")
@@ -238,10 +372,11 @@ def main():
 
     print(f"✅ {len(novas)} novidades enviadas!")
 
-    # Atualiza histórico
     for j in novas:
         historico.add(j['id'])
     salvar_historico(historico)
+
+    enviar_alerta_saude()
 
 
 if __name__ == "__main__":
