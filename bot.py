@@ -57,7 +57,11 @@ def buscar_promocoes_cheapshark():
 
 
 def filtrar_promocoes_cheapshark(jogos, cotacao_dolar):
+    print(f"🔎 CheapShark retornou {len(jogos)} itens brutos para a loja Xbox.")
     promocoes = []
+    descartados_preco_zero = 0
+    descartados_desconto = 0
+    descartados_nota = 0
     for jogo in jogos:
         desconto = float(jogo.get('savings', 0))
         metacritic = int(jogo.get('metacriticScore') or 0)
@@ -65,20 +69,33 @@ def filtrar_promocoes_cheapshark(jogos, cotacao_dolar):
         preco_usd = float(jogo.get('salePrice', 0))
 
         if preco_usd <= 0:
+            descartados_preco_zero += 1
             continue  # jogos grátis são tratados pela fonte GamerPower
 
-        if desconto >= DESCONTO_MINIMO and (metacritic >= 70 or nota_usuarios >= 80):
-            promocoes.append({
-                'titulo': jogo['title'],
-                'desconto': f"{desconto:.0f}%",
-                'preco_brl': preco_usd * cotacao_dolar,
-                'eh_gratis': False,
-                'metacritic': metacritic,
-                'nota_users': nota_usuarios,
-                'imagem': jogo.get('thumb'),
-                'link': f"https://www.cheapshark.com/redirect?dealID={jogo['dealID']}",
-                'id': f"cs_{jogo['dealID']}"
-            })
+        if desconto < DESCONTO_MINIMO:
+            descartados_desconto += 1
+            continue
+
+        if not (metacritic >= 70 or nota_usuarios >= 80):
+            descartados_nota += 1
+            continue
+
+        promocoes.append({
+            'titulo': jogo['title'],
+            'desconto': f"{desconto:.0f}%",
+            'preco_brl': preco_usd * cotacao_dolar,
+            'eh_gratis': False,
+            'metacritic': metacritic,
+            'nota_users': nota_usuarios,
+            'imagem': jogo.get('thumb'),
+            'link': f"https://www.cheapshark.com/redirect?dealID={jogo['dealID']}",
+            'id': f"cs_{jogo['dealID']}"
+        })
+
+    print(f"   ↳ Descartados por preço zero (não é o alvo aqui): {descartados_preco_zero}")
+    print(f"   ↳ Descartados por desconto abaixo de {DESCONTO_MINIMO}%: {descartados_desconto}")
+    print(f"   ↳ Descartados por nota (Metacritic/Steam) insuficiente: {descartados_nota}")
+    print(f"   ↳ Passaram no filtro: {len(promocoes)}")
     return promocoes
 
 
