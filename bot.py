@@ -14,7 +14,8 @@ ITAD_API_KEY = os.getenv("ITAD_API_KEY")  # opcional: ativa a fonte oficial Micr
 # → Actions → aba "Variables" → crie/edite DESCONTO_MINIMO (ex: 80, 85, 95)
 DESCONTO_MINIMO = int(os.getenv("DESCONTO_MINIMO", "85"))
 
-# ===== ARQUIVO DE HISTÓRICO (para não repetir promoção) =====
+# Dia da semana para o resumo semanal (0=segunda, 1=terça, ..., 6=domingo)
+DIA_RESUMO_SEMANAL = int(os.getenv("DIA_RESUMO_SEMANAL", "0"))
 HISTORICO_FILE = "historico.json"
 
 # Link para a página de Actions do repositório (usado nos alertas de "quebrou")
@@ -297,6 +298,31 @@ def enviar_foto_telegram(imagem_url, legenda):
         enviar_texto_telegram(legenda)
 
 
+def enviar_resumo_semanal(todas):
+    """Toda semana (dia configurável), manda um resumo com tudo que ainda está
+    valendo, mesmo que já tenha sido enviado como novidade antes."""
+    if not todas:
+        enviar_texto_telegram("📅 <b>RESUMO SEMANAL:</b> nenhuma promoção ativa no momento que bata os critérios.")
+        return
+
+    gratis = [j for j in todas if j['eh_gratis']]
+    promocoes = [j for j in todas if not j['eh_gratis']]
+
+    enviar_texto_telegram(f"📅 <b>RESUMO SEMANAL: {len(todas)} promoções/jogos grátis ainda valendo</b>")
+
+    if gratis:
+        enviar_texto_telegram("🆓 <b>Ainda grátis</b>")
+        for j in gratis[:15]:
+            enviar_foto_telegram(j['imagem'], montar_legenda(j))
+            time.sleep(1)
+
+    if promocoes:
+        enviar_texto_telegram(f"💥 <b>Ainda em promoção ({DESCONTO_MINIMO}%+ OFF)</b>")
+        for j in promocoes[:15]:
+            enviar_foto_telegram(j['imagem'], montar_legenda(j))
+            time.sleep(1)
+
+
 def enviar_alerta_saude():
     """Se alguma fonte apresentou comportamento estranho, avisa separadamente."""
     if not alertas_saude:
@@ -336,6 +362,11 @@ def main():
     promocoes_itad = buscar_promocoes_itad(cotacao_dolar)
 
     todas = promocoes + gratis + promocoes_itad
+
+    # Resumo semanal: independente de haver novidade, roda no dia configurado
+    eh_dia_de_resumo = datetime.now().weekday() == DIA_RESUMO_SEMANAL
+    if eh_dia_de_resumo:
+        enviar_resumo_semanal(todas)
 
     novas = [j for j in todas if j['id'] not in historico]
 
