@@ -7,6 +7,7 @@ from datetime import datetime
 # ===== CONFIGURAÇÕES (vem do GitHub Secrets) =====
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
+ITAD_API_KEY = os.getenv("ITAD_API_KEY")  # opcional: ativa a fonte oficial Microsoft Store
 
 # ===== CONFIGURAÇÕES DO FILTRO =====
 # Pode ser alterado sem mexer no código: GitHub → Settings → Secrets and variables
@@ -177,6 +178,76 @@ def filtrar_gratis_gamerpower(giveaways):
     return gratis
 
 
+# ===================== FONTE 3: IsThereAnyDeal (Microsoft Store oficial) =====================
+
+SHOP_ID_MICROSOFT_STORE = 48
+
+
+def buscar_promocoes_itad(cotacao_dolar):
+    """Busca promoções da Microsoft Store através da API oficial da IsThereAnyDeal."""
+    if not ITAD_API_KEY:
+        print("ℹ️ ITAD_API_KEY não configurada — pulando fonte Microsoft Store (opcional).")
+        return []
+
+    try:
+        url = "https://api.isthereanydeal.com/deals/v2"
+        params = {
+            "key": ITAD_API_KEY,
+            "country": "BR",       # tenta já vir em reais
+            "shops": SHOP_ID_MICROSOFT_STORE,
+            "limit": 100,
+            "sort": "-cut",        # maior desconto primeiro
+        }
+        resp = requests.get(url, params=params, timeout=20)
+        resp.raise_for_status()
+        dados = resp.json()
+        itens = dados.get("list", [])
+
+        if len(itens) == 0:
+            alertas_saude.append(
+                "IsThereAnyDeal (Microsoft Store): retornou 0 itens — pode estar sem promoções "
+                "no momento ou a chave/config mudou."
+            )
+        print(f"🔎 IsThereAnyDeal retornou {len(itens)} itens da Microsoft Store.")
+
+        promocoes = []
+        for item in itens:
+            deal = item.get("deal", {})
+            cut = deal.get("cut", 0)
+            if cut < DESCONTO_MINIMO:
+                continue
+
+            preco_info = deal.get("price", {})
+            preco_valor = preco_info.get("amount", 0)
+            moeda = preco_info.get("currency", "USD")
+            preco_brl = preco_valor if moeda == "BRL" else preco_valor * cotacao_dolar
+
+            assets = item.get("assets", {})
+            imagem = assets.get("banner300") or assets.get("boxart")
+
+            promocoes.append({
+                'titulo': item.get('title', 'Jogo'),
+                'desconto': f"{cut}%",
+                'preco_brl': preco_brl,
+                'eh_gratis': preco_valor <= 0,
+                'metacritic': 0,
+                'nota_users': 0,
+                'genero': None,
+                'imagem': imagem,
+                'link': deal.get('url'),
+                'id': f"itad_{item['id']}",
+                'fonte': "Microsoft Store (IsThereAnyDeal)"
+            })
+
+        print(f"   ↳ Passaram no filtro: {len(promocoes)}")
+        return promocoes
+
+    except Exception as e:
+        print(f"⚠️ Erro ao buscar IsThereAnyDeal: {e}")
+        alertas_saude.append(f"IsThereAnyDeal (Microsoft Store): erro ao buscar dados ({e})")
+        return []
+
+
 # ===================== TELEGRAM =====================
 
 def montar_legenda(j):
@@ -261,7 +332,10 @@ def main():
     giveaways = buscar_gratis_gamerpower()
     gratis = filtrar_gratis_gamerpower(giveaways)
 
-    todas = promocoes + gratis
+    # Fonte 3: promoções oficiais da Microsoft Store (via IsThereAnyDeal, opcional)
+    promocoes_itad = buscar_promocoes_itad(cotacao_dolar)
+
+    todas = promocoes + gratis + promocoes_itad
 
     novas = [j for j in todas if j['id'] not in historico]
 
