@@ -31,7 +31,8 @@ jobs:
         env:
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           CHAT_ID: ${{ secrets.CHAT_ID }}
-          DESCONTO_MINIMO: ${{ github.event.inputs.desconto_minimo || vars.DESCONTO_MINIMO || '95' }}
+          ITAD_API_KEY: ${{ secrets.ITAD_API_KEY }}
+          DESCONTO_MINIMO: ${{ github.event.inputs.desconto_minimo || vars.DESCONTO_MINIMO || '85' }}
         run: python bot.py
 
       - name: 💾 Salvar histórico atualizado
